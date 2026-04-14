@@ -62,6 +62,8 @@ async def stream_chat(messages: list):
         "HTTP-Referer": "https://hermes-voice-chat.local",
     }
     ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     loop = asyncio.get_event_loop()
 
     try:
