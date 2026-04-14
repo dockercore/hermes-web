@@ -102,6 +102,14 @@
     font-size: 13px;
     padding: 8px;
   }
+  .msg.thinking {
+    align-self: flex-start;
+    background: rgba(108,92,231,0.1);
+    border: 1px dashed rgba(108,92,231,0.3);
+    color: var(--text2);
+    font-size: 13px;
+    border-bottom-left-radius: 4px;
+  }
   .msg .typing-dots span {
     display: inline-block;
     width: 6px; height: 6px;
@@ -358,10 +366,51 @@ function connectWS() {
 
 // ==================== 服务端消息处理 ====================
 let assistantMsgEl = null;
+let thinkingEl = null;
 let fullReply = '';
+let thinkingText = '';
 
 function handleServerMessage(data) {
   switch(data.type) {
+    case 'thinking_start':
+      // 显示"正在思考..."
+      thinkingEl = addMsg('thinking', '🤔 思考中...');
+      break;
+    
+    case 'thinking':
+      // 更新思考内容（折叠显示）
+      thinkingText += data.content;
+      if (thinkingEl) {
+        const preview = thinkingText.length > 60 
+          ? thinkingText.substring(0, 60) + '...' 
+          : thinkingText;
+        thinkingEl.textContent = '🤔 ' + preview;
+      }
+      scrollToBottom();
+      break;
+    
+    case 'thinking_end':
+      // 思考结束，折叠显示
+      if (thinkingEl) {
+        const preview = thinkingText.length > 80 
+          ? thinkingText.substring(0, 80) + '...' 
+          : thinkingText;
+        thinkingEl.textContent = '🤔 ' + preview;
+        thinkingEl.onclick = () => {
+          if (thinkingEl.classList.contains('expanded')) {
+            thinkingEl.textContent = '🤔 ' + preview;
+            thinkingEl.classList.remove('expanded');
+          } else {
+            thinkingEl.textContent = '🤔 ' + thinkingText;
+            thinkingEl.classList.add('expanded');
+          }
+        };
+        thinkingEl.style.cursor = 'pointer';
+        thinkingEl.title = '点击展开/折叠思考过程';
+      }
+      thinkingText = '';
+      break;
+    
     case 'stream':
       if (!assistantMsgEl) {
         assistantMsgEl = addMsg('assistant', '');

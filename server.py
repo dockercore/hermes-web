@@ -1,6 +1,6 @@
 """
 Hermes Voice Chat - Backend Server
-纯 stdlib 流式调用 OpenRouter API
+支持推理模型（GLM-5.1）的 reasoning + content 双字段流式输出
 """
 
 import json
@@ -41,7 +41,7 @@ def _do_request(url, headers, body, ctx):
 
 
 async def stream_chat(messages: list):
-    """流式调用 OpenRouter API，逐 token yield"""
+    """流式调用 OpenRouter API，处理 reasoning + content 双字段"""
     config = load_config()
     api_key = config.get("model", {}).get("api_key", "")
     base_url = config.get("model", {}).get("base_url", "https://openrouter.ai/api/v1")
@@ -53,7 +53,7 @@ async def stream_chat(messages: list):
         "messages": messages,
         "stream": True,
         "temperature": 0.7,
-        "max_tokens": 500,
+        "max_tokens": 2048,
     }).encode("utf-8")
 
     headers = {
@@ -70,8 +70,9 @@ async def stream_chat(messages: list):
         resp = await loop.run_in_executor(None, _do_request, url, headers, payload, ctx)
 
         buf = ""
+        in_reasoning = False
         while True:
-            chunk = await loop.run_in_executor(None, lambda: resp.read(256))
+            chunk = await loop.run_in_executor(None, lambda: resp.read(512))
             if not chunk:
                 break
             buf += chunk.decode("utf-8", errors="replace")
@@ -87,14 +88,28 @@ async def stream_chat(messages: list):
                 try:
                     data = json.loads(data_str)
                     delta = data.get("choices", [{}])[0].get("delta", {})
-                    content = delta.get("content", "")
+
+                    # 处理推理（思考）内容
+                    reasoning = delta.get("reasoning")
+                    if reasoning:
+                        if not in_reasoning:
+                            in_reasoning = True
+                            yield ("thinking_start", "")
+                        yield ("thinking", reasoning)
+
+                    # 处理正式回复内容
+                    content = delta.get("content")
                     if content:
-                        yield content
+                        if in_reasoning:
+                            in_reasoning = False
+                            yield ("thinking_end", "")
+                        yield ("content", content)
+
                 except json.JSONDecodeError:
                     continue
 
     except Exception as e:
-        yield f"\n[ERROR: {e}]"
+        yield ("error", str(e))
 
 
 @app.get("/")
@@ -120,13 +135,39 @@ async def chat_websocket(ws: WebSocket):
                 messages.append({"role": "user", "content": user_text})
 
                 full_reply = ""
+                thinking_text = ""
                 try:
-                    async for token in stream_chat(messages):
-                        full_reply += token
-                        await ws.send_text(json.dumps({
-                            "type": "stream",
-                            "content": token,
-                        }))
+                    async for event_type, text in stream_chat(messages):
+                        if event_type == "thinking_start":
+                            await ws.send_text(json.dumps({
+                                "type": "thinking_start",
+                            }))
+                        elif event_type == "thinking":
+                            thinking_text += text
+                            await ws.send_text(json.dumps({
+                                "type": "thinking",
+                                "content": text,
+                            }))
+                        elif event_type == "thinking_end":
+                            await ws.send_text(json.dumps({
+                                "type": "thinking_end",
+                                "content": thinking_text,
+                            }))
+                        elif event_type == "content":
+                            full_reply += text
+                            await ws.send_text(json.dumps({
+                                "type": "stream",
+                                "content": text,
+                            }))
+                        elif event_type == "error":
+                            await ws.send_text(json.dumps({
+                                "type": "error",
+                                "content": f"API 错误: {text}",
+                            }))
+
+                    if not full_reply and thinking_text:
+                        # 某些模型可能只返回 reasoning 没有 content
+                        full_reply = thinking_text
 
                     messages.append({"role": "assistant", "content": full_reply})
                     await ws.send_text(json.dumps({
